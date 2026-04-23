@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>刷课神器 - AI视频笔记</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "PingFang SC", sans-serif; }
+  .loading { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body class="bg-gray-50">
+
+<div class="max-w-5xl mx-auto p-6">
+  <h1 class="text-3xl font-bold mb-2">📚 刷课神器</h1>
+  <p class="text-gray-600 mb-6">粘贴B站链接，AI自动生成笔记+评论区重点</p>
+
+  <!-- 登录区 -->
+  <div id="authBox" class="bg-white p-4 rounded-lg shadow mb-6">
+    <div id="loginForm">
+      <input id="email" type="email" placeholder="邮箱" class="border p-2 rounded mr-2">
+      <input id="password" type="password" placeholder="密码" class="border p-2 rounded mr-2">
+      <button onclick="signUp()" class="bg-blue-500 text-white px-4 py-2 rounded">注册</button>
+      <button onclick="signIn()" class="bg-green-500 text-white px-4 py-2 rounded">登录</button>
+    </div>
+    <div id="userInfo" class="hidden">
+      已登录：<span id="userEmail"></span>
+      <button onclick="signOut()" class="ml-4 text-red-500">退出</button>
+    </div>
+  </div>
+
+  <!-- 输入区 -->
+  <div class="bg-white p-6 rounded-lg shadow mb-6">
+    <h2 class="text-xl font-bold mb-3">🎬 生成新笔记</h2>
+    <input id="videoUrl" type="text" 
+      placeholder="粘贴B站视频链接，如 https://www.bilibili.com/video/BV1xx" 
+      class="w-full border p-3 rounded mb-3">
+    <div class="flex gap-3 mb-3">
+      <label><input type="checkbox" id="isPublic"> 公开到笔记库</label>
+    </div>
+    <button onclick="generateNote()" id="genBtn"
+      class="bg-purple-600 text-white px-6 py-3 rounded font-bold">
+      🚀 一键生成笔记
+    </button>
+    <div id="status" class="mt-3 text-gray-600"></div>
+  </div>
+
+  <!-- 搜索区 -->
+  <div class="bg-white p-6 rounded-lg shadow mb-6">
+    <h2 class="text-xl font-bold mb-3">🔍 搜索公共笔记库</h2>
+    <input id="searchInput" type="text" placeholder="如：Python入门、考研数学..." 
+      class="w-full border p-3 rounded mb-3">
+    <button onclick="searchNotes()" class="bg-orange-500 text-white px-6 py-2 rounded">搜索</button>
+    <div id="searchResults" class="mt-4 space-y-3"></div>
+  </div>
+
+  <!-- 我的笔记 -->
+  <div class="bg-white p-6 rounded-lg shadow">
+    <h2 class="text-xl font-bold mb-3">📒 我的笔记</h2>
+    <div id="myNotes" class="space-y-3"></div>
+  </div>
+</div>
+
+<!-- 笔记详情弹窗 -->
+<div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+  <div class="bg-white rounded-lg max-w-3xl w-full max-h-[90vh] overflow-auto p-6">
+    <button onclick="document.getElementById('modal').classList.add('hidden')" 
+      class="float-right text-2xl">✕</button>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<script>
+// ============ 配置区（你要改这里！） ============
+const SUPABASE_URL = 'https://nmbbhmnkksficlyswlks.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5tYmJobW5ra3NmaWNseXN3bGtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5MTYyMzgsImV4cCI6MjA5MjQ5MjIzOH0.CCfv8l1AOSmDNyRmhLC1yzTCBfDFd6FSDZ7vHhLKseU';
+const AI_API_KEY = 'sk-acef9d768e5a47949f73a3a6f4773ebf';
+const AI_API_URL = 'https://api.deepseek.com/v1/chat/completions'; // DeepSeek便宜
+const AI_MODEL = 'deepseek-chat';
+// ================================================
+
+const { createClient } = window.supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+let currentUser = null;
+
+// 页面加载时检查登录状态
+window.onload = async () => {
+  const { data } = await db.auth.getSession();
+  if (data.session) {
+    currentUser = data.session.user;
+    showUser();
+    loadMyNotes();
+  }
+};
+
+async function signUp() {
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const { error } = await db.auth.signUp({ email, password });
+  if (error) alert('注册失败：' + error.message);
+  else alert('注册成功！请查邮箱验证后登录');
+}
+
+async function signIn() {
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const { data, error } = await db.auth.signInWithPassword({ email, password });
+  if (error) alert('登录失败：' + error.message);
+  else {
+    currentUser = data.user;
+    showUser();
+    loadMyNotes();
+  }
+}
+
+async function signOut() {
+  await db.auth.signOut();
+  currentUser = null;
+  document.getElementById('loginForm').classList.remove('hidden');
+  document.getElementById('userInfo').classList.add('hidden');
+  document.getElementById('myNotes').innerHTML = '';
+}
+
+function showUser() {
+  document.getElementById('loginForm').classList.add('hidden');
+  document.getElementById('userInfo').classList.remove('hidden');
+  document.getElementById('userEmail').innerText = currentUser.email;
+}
+
+// ========== 核心功能：生成笔记 ==========
+async function generateNote() {
+  if (!currentUser) { alert('请先登录'); return; }
+  const url = document.getElementById('videoUrl').value.trim();
+  if (!url.includes('bilibili.com')) { alert('请输入B站链接'); return; }
+
+  const btn = document.getElementById('genBtn');
+  const status = document.getElementById('status');
+  btn.disabled = true;
+  btn.innerText = '⏳ 处理中...';
+
+  try {
+    // 1. 提取 BV 号
+    const bvMatch = url.match(/BV[a-zA-Z0-9]+/);
+    if (!bvMatch) throw new Error('链接里找不到BV号');
+    const bvid = bvMatch[0];
+
+    // 2. 获取视频信息
+    status.innerText = '📡 获取视频信息...';
+    const videoInfo = await getBiliVideoInfo(bvid);
+
+    // 3. 获取字幕
+    status.innerText = '📝 抓取视频字幕...';
+    const subtitle = await getBiliSubtitle(bvid, videoInfo.cid);
+
+    // 4. 获取评论
+    status.innerText = '💬 抓取评论区...';
+    const comments = await getBiliComments(videoInfo.aid);
+
+    // 5. AI 总结
+    status.innerText = '🤖 AI 正在生成笔记（可能需要30秒）...';
+    const aiResult = await callAI(videoInfo.title, subtitle, comments);
+
+    // 6. 存入 Supabase
+    status.innerText = '💾 保存中...';
+    const { error } = await db.from('notes').insert({
+      user_id: currentUser.id,
+      video_url: url,
+      video_title: videoInfo.title,
+      video_cover: videoInfo.pic,
+      summary: aiResult.summary,
+      comments_summary: aiResult.commentsSummary,
+      mindmap: aiResult.mindmap,
+      tags: aiResult.tags,
+      category: aiResult.category,
+      is_public: document.getElementById('isPublic').checked
+    });
+
+    if (error) throw error;
+    status.innerText = '✅ 笔记生成完成！';
+    loadMyNotes();
+  } catch (e) {
+    status.innerText = '❌ 失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerText = '🚀 一键生成笔记';
+  }
+}
+
+// ========== B站 API 调用 ==========
+// 注意：浏览器直接调B站API会有跨域问题，需要用代理
+// 这里用一个公共代理（仅演示，生产环境请自建）
+
+
+
+// ========== B站 API 调用（通过 Supabase Edge Function 代理）==========
+async function callBiliProxy(payload) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/bili-proxy`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + SUPABASE_KEY
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error('代理请求失败：' + res.status);
+  return await res.json();
+}
+
+async function getBiliVideoInfo(bvid) {
+  const json = await callBiliProxy({ action: 'info', bvid });
+  if (json.code !== 0) throw new Error('视频信息获取失败：' + (json.message || '未知错误'));
+  return {
+    aid: json.data.aid,
+    cid: json.data.cid,
+    title: json.data.title,
+    pic: json.data.pic,
+    desc: json.data.desc
+  };
+}
+
+async function getBiliSubtitle(bvid, cid) {
+  try {
+    const json = await callBiliProxy({ action: 'subtitle', bvid, cid });
+    const subs = json.data?.subtitle?.subtitles;
+    if (!subs || subs.length === 0) return '（该视频无字幕，AI将基于标题和评论总结）';
+    const subUrl = subs[0].subtitle_url;
+    const subJson = await callBiliProxy({ action: 'fetchSubtitle', url: subUrl });
+    return subJson.body.map(b => b.content).join(' ');
+  } catch (e) {
+    return '（字幕抓取失败，AI将基于标题和评论总结）';
+  }
+}
+
+async function getBiliComments(aid) {
+  const json = await callBiliProxy({ action: 'comments', aid });
+  if (!json.data?.replies) return [];
+  return json.data.replies.map(r => ({
+    content: r.content.message,
+    likes: r.like
+  }));
+}
+
+
+// ========== AI 调用 ==========
+async function callAI(title, subtitle, comments) {
+  const commentsText = comments.slice(0, 20)
+    .map(c => `[${c.likes}赞] ${c.content}`).join('\n');
+
+  const prompt = `你是一个学习笔记整理专家。请根据以下B站视频信息生成结构化笔记：
+
+【视频标题】${title}
+【视频字幕/内容】${subtitle.slice(0, 8000)}
+【高赞评论区】${commentsText}
+
+请严格按以下 JSON 格式返回（不要有任何多余文字）：
+{
+  "summary": "视频内容总结（Markdown格式，包含核心要点、关键知识、结论）",
+  "commentsSummary": "评论区重点提取（学长学姐划的重点、考试必考、常见疑问等）",
+  "mindmap": "Markdown格式的思维导图，用缩进和 - 表示层级",
+  "tags": ["标签1","标签2","标签3"],
+  "category": "主分类（如：编程、考研、考证、语言学习、职场等）"
+}`;
+
+  const res = await fetch(AI_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + AI_API_KEY
+    },
+    body: JSON.stringify({
+      model: AI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' }
+    })
+  });
+  const json = await res.json();
+  const content = json.choices[0].message.content;
+  return JSON.parse(content);
+}
+
+// ========== 加载笔记 ==========
+async function loadMyNotes() {
+  if (!currentUser) return;
+  const { data } = await db.from('notes')
+    .select('*').eq('user_id', currentUser.id)
+    .order('created_at', { ascending: false });
+  renderNotes(data || [], 'myNotes');
+}
+
+async function searchNotes() {
+  const q = document.getElementById('searchInput').value.trim();
+  let query = db.from('notes').select('*').eq('is_public', true);
+  if (q) {
+    query = query.or(`video_title.ilike.%${q}%,category.ilike.%${q}%`);
+  }
+  const { data } = await query.order('created_at', { ascending: false }).limit(20);
+  renderNotes(data || [], 'searchResults');
+}
+
+function renderNotes(notes, targetId) {
+  const html = notes.map(n => `
+    <div class="border p-3 rounded hover:bg-gray-50 cursor-pointer" onclick='showNote(${JSON.stringify(n).replace(/'/g, "&#39;")})'>
+      <div class="flex gap-3">
+        ${n.video_cover ? `<img src="${n.video_cover}" class="w-32 h-20 object-cover rounded">` : ''}
+        <div class="flex-1">
+          <h3 class="font-bold">${n.video_title || '无标题'}</h3>
+          <div class="text-sm text-gray-500 mt-1">
+            ${(n.tags || []).map(t => `<span class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded mr-1">${t}</span>`).join('')}
+          </div>
+          <div class="text-xs text-gray-400 mt-1">${n.is_public ? '🌐 公开' : '🔒 私密'} · ${new Date(n.created_at).toLocaleDateString()}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+  document.getElementById(targetId).innerHTML = html || '<p class="text-gray-400">暂无笔记</p>';
+}
+
+function showNote(n) {
+  document.getElementById('modalContent').innerHTML = `
+    <h2 class="text-2xl font-bold mb-3">${n.video_title}</h2>
+    <a href="${n.video_url}" target="_blank" class="text-blue-500 text-sm">🔗 原视频</a>
+    <div class="mt-4">
+      <h3 class="text-lg font-bold mt-4">📖 内容总结</h3>
+      <pre class="whitespace-pre-wrap bg-gray-50 p-3 rounded">${n.summary || ''}</pre>
+      <h3 class="text-lg font-bold mt-4">💬 评论区重点</h3>
+      <pre class="whitespace-pre-wrap bg-yellow-50 p-3 rounded">${n.comments_summary || ''}</pre>
+      <h3 class="text-lg font-bold mt-4">🧠 思维导图</h3>
+      <pre class="whitespace-pre-wrap bg-green-50 p-3 rounded">${n.mindmap || ''}</pre>
+    </div>
+  `;
+  document.getElementById('modal').classList.remove('hidden');
+}
+</script>
+</body>
+</html>
