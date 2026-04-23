@@ -1,11 +1,18 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <meta charset="UTF-8">
 <title>刷课神器 - AI视频笔记</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
+  .prose h2 { font-size: 1.3rem; font-weight: bold; margin-top: 1rem; }
+.prose h3 { font-size: 1.1rem; font-weight: bold; margin-top: 0.8rem; }
+.prose ul { list-style: disc; padding-left: 1.5rem; }
+.prose ol { list-style: decimal; padding-left: 1.5rem; }
+.prose strong { color: #7c3aed; }
+.prose code { background: #eee; padding: 2px 6px; border-radius: 4px; }
   body { font-family: -apple-system, "PingFang SC", sans-serif; }
   .loading { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -76,8 +83,6 @@
 // ============ 配置区（你要改这里！） ============
 const SUPABASE_URL = 'https://nmbbhmnkksficlyswlks.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5tYmJobW5ra3NmaWNseXN3bGtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5MTYyMzgsImV4cCI6MjA5MjQ5MjIzOH0.CCfv8l1AOSmDNyRmhLC1yzTCBfDFd6FSDZ7vHhLKseU';
-const AI_API_KEY = 'sk-acef9d768e5a47949f73a3a6f4773ebf';
-const AI_API_URL = 'https://api.deepseek.com/v1/chat/completions'; // DeepSeek便宜
 const AI_MODEL = 'deepseek-chat';
 // ================================================
 
@@ -245,40 +250,47 @@ async function getBiliComments(aid) {
 
 // ========== AI 调用 ==========
 async function callAI(title, subtitle, comments) {
-  const commentsText = comments.slice(0, 20)
+  const commentsText = comments.slice(0, 30)
     .map(c => `[${c.likes}赞] ${c.content}`).join('\n');
 
-  const prompt = `你是一个学习笔记整理专家。请根据以下B站视频信息生成结构化笔记：
+  const prompt = `你是一位资深学习导师 + 学科专家，擅长把视频内容提炼成"比原视频还好用"的深度学习笔记。
 
 【视频标题】${title}
-【视频字幕/内容】${subtitle.slice(0, 8000)}
-【高赞评论区】${commentsText}
+【视频完整字幕】${subtitle.slice(0, 30000)}
+【评论区高赞】${commentsText}
 
-请严格按以下 JSON 格式返回（不要有任何多余文字）：
+请生成高质量深度笔记，严格返回 JSON（内容用 Markdown，summary 不少于 1500 字）：
 {
-  "summary": "视频内容总结（Markdown格式，包含核心要点、关键知识、结论）",
-  "commentsSummary": "评论区重点提取（学长学姐划的重点、考试必考、常见疑问等）",
-  "mindmap": "Markdown格式的思维导图，用缩进和 - 表示层级",
-  "tags": ["标签1","标签2","标签3"],
-  "category": "主分类（如：编程、考研、考证、语言学习、职场等）"
-}`;
+  "summary": "## 一、核心结论\\n...\\n## 二、知识体系\\n每点含：是什么/为什么/怎么用/易错点\\n## 三、关键点深度解析\\n挑 3-5 个重点，每个 200+ 字\\n## 四、知识联系\\n## 五、可行建议\\n学习路径/实操练习/避坑/延伸资料",
+  "commentsSummary": "## 📌 学长学姐划重点\\n## ⚠️ 常见疑问\\n## 💡 补充经验",
+  "mindmap": "至少 4 层的 Markdown 思维导图",
+  "tags": ["5个精准标签"],
+  "category": "主分类"
+}
+要求：不复读原话、给例子数字代码、建议要具体到今天能做什么。`;
 
-  const res = await fetch(AI_API_URL, {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/bili-proxy`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + AI_API_KEY
+      'Authorization': 'Bearer ' + SUPABASE_KEY
     },
     body: JSON.stringify({
-      model: AI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' }
+      action: 'ai',
+      body: {
+        model: AI_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' },
+        temperature: 0.3,
+        max_tokens: 8000
+      }
     })
   });
   const json = await res.json();
-  const content = json.choices[0].message.content;
-  return JSON.parse(content);
+  if (!json.choices) throw new Error('AI返回异常：' + JSON.stringify(json));
+  return JSON.parse(json.choices[0].message.content);
 }
+
 
 // ========== 加载笔记 ==========
 async function loadMyNotes() {
@@ -293,9 +305,14 @@ async function searchNotes() {
   const q = document.getElementById('searchInput').value.trim();
   let query = db.from('notes').select('*').eq('is_public', true);
   if (q) {
-    query = query.or(`video_title.ilike.%${q}%,category.ilike.%${q}%`);
+    // 标题、分类、标签三路搜索
+    query = query.or(`video_title.ilike.%${q}%,category.ilike.%${q}%,tags.cs.{${q}}`);
   }
-  const { data } = await query.order('created_at', { ascending: false }).limit(20);
+  const { data, error } = await query
+    .order('view_count', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(30);
+  if (error) console.error(error);
   renderNotes(data || [], 'searchResults');
 }
 
@@ -318,16 +335,18 @@ function renderNotes(notes, targetId) {
 }
 
 function showNote(n) {
+  db.from('notes').update({ view_count: (n.view_count||0) + 1 }).eq('id', n.id).then();
+  const md = (text) => marked.parse(text || '');
   document.getElementById('modalContent').innerHTML = `
-    <h2 class="text-2xl font-bold mb-3">${n.video_title}</h2>
+    <h2 class="text-2xl font-bold mb-2">${n.video_title}</h2>
     <a href="${n.video_url}" target="_blank" class="text-blue-500 text-sm">🔗 原视频</a>
-    <div class="mt-4">
-      <h3 class="text-lg font-bold mt-4">📖 内容总结</h3>
-      <pre class="whitespace-pre-wrap bg-gray-50 p-3 rounded">${n.summary || ''}</pre>
-      <h3 class="text-lg font-bold mt-4">💬 评论区重点</h3>
-      <pre class="whitespace-pre-wrap bg-yellow-50 p-3 rounded">${n.comments_summary || ''}</pre>
-      <h3 class="text-lg font-bold mt-4">🧠 思维导图</h3>
-      <pre class="whitespace-pre-wrap bg-green-50 p-3 rounded">${n.mindmap || ''}</pre>
+    <div class="prose max-w-none mt-4">
+      <h3 class="text-lg font-bold mt-4 border-l-4 border-purple-500 pl-2">📖 深度笔记</h3>
+      <div class="bg-gray-50 p-4 rounded">${md(n.summary)}</div>
+      <h3 class="text-lg font-bold mt-4 border-l-4 border-yellow-500 pl-2">💬 评论区精华</h3>
+      <div class="bg-yellow-50 p-4 rounded">${md(n.comments_summary)}</div>
+      <h3 class="text-lg font-bold mt-4 border-l-4 border-green-500 pl-2">🧠 思维导图</h3>
+      <div class="bg-green-50 p-4 rounded">${md(n.mindmap)}</div>
     </div>
   `;
   document.getElementById('modal').classList.remove('hidden');
