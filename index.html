@@ -17,6 +17,8 @@
   .loading { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 </head>
 <body class="bg-gray-50">
 
@@ -262,7 +264,7 @@ async function callAI(title, subtitle, comments) {
 请生成高质量深度笔记，严格返回 JSON（内容用 Markdown，summary 不少于 1500 字）：
 {
   "summary": "## 一、核心结论\\n...\\n## 二、知识体系\\n每点含：是什么/为什么/怎么用/易错点\\n## 三、关键点深度解析\\n挑 3-5 个重点，每个 200+ 字\\n## 四、知识联系\\n## 五、可行建议\\n学习路径/实操练习/避坑/延伸资料",
-  "commentsSummary": "## 📌 学长学姐划重点\\n## ⚠️ 常见疑问\\n## 💡 补充经验",
+  "commentsSummary": "## 📌 评论区高赞观点\\n## ⚠️ 常见疑问\\n## 💡 补充经验",
   "mindmap": "至少 4 层的 Markdown 思维导图",
   "tags": ["5个精准标签"],
   "category": "主分类"
@@ -289,6 +291,61 @@ async function callAI(title, subtitle, comments) {
   const json = await res.json();
   if (!json.choices) throw new Error('AI返回异常：' + JSON.stringify(json));
   return JSON.parse(json.choices[0].message.content);
+}
+
+async function exportNote(type) {
+  const el = document.getElementById('exportArea');
+  if (!el) { alert('找不到笔记内容'); return; }
+
+  // 隐藏按钮（截图时不要按钮入镜）
+  const btns = el.querySelectorAll('button');
+  btns.forEach(b => b.style.visibility = 'hidden');
+
+  try {
+    const canvas = await html2canvas(el, {
+      scale: 2,                  // 高清
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false
+    });
+
+    const fileName = '笔记_' + new Date().toISOString().slice(0,10);
+
+    if (type === 'png') {
+      const link = document.createElement('a');
+      link.download = fileName + '.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } else {
+      const { jsPDF } = window.jspdf;
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageW = 210;
+      const pageH = 297;
+      const imgW = pageW;
+      const imgH = canvas.height * imgW / canvas.width;
+
+      let heightLeft = imgH;
+      let position = 0;
+
+      pdf.addImage(imgData, 'PNG', 0, position, imgW, imgH);
+      heightLeft -= pageH;
+
+      // 内容超过一页时分页
+      while (heightLeft > 0) {
+        position = heightLeft - imgH;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, imgW, imgH);
+        heightLeft -= pageH;
+      }
+
+      pdf.save(fileName + '.pdf');
+    }
+  } catch (err) {
+    alert('导出失败：' + err.message);
+  } finally {
+    btns.forEach(b => b.style.visibility = 'visible');
+  }
 }
 
 
@@ -338,19 +395,33 @@ function showNote(n) {
   db.from('notes').update({ view_count: (n.view_count||0) + 1 }).eq('id', n.id).then();
   const md = (text) => marked.parse(text || '');
   document.getElementById('modalContent').innerHTML = `
-    <h2 class="text-2xl font-bold mb-2">${n.video_title}</h2>
-    <a href="${n.video_url}" target="_blank" class="text-blue-500 text-sm">🔗 原视频</a>
-    <div class="prose max-w-none mt-4">
-      <h3 class="text-lg font-bold mt-4 border-l-4 border-purple-500 pl-2">📖 深度笔记</h3>
-      <div class="bg-gray-50 p-4 rounded">${md(n.summary)}</div>
-      <h3 class="text-lg font-bold mt-4 border-l-4 border-yellow-500 pl-2">💬 评论区精华</h3>
-      <div class="bg-yellow-50 p-4 rounded">${md(n.comments_summary)}</div>
-      <h3 class="text-lg font-bold mt-4 border-l-4 border-green-500 pl-2">🧠 思维导图</h3>
-      <div class="bg-green-50 p-4 rounded">${md(n.mindmap)}</div>
+    <div style="margin-bottom:12px; text-align:right;">
+      <button onclick="exportNote('png')" 
+        style="background:#10b981;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;margin-right:8px;">
+        📷 导出 PNG
+      </button>
+      <button onclick="exportNote('pdf')" 
+        style="background:#3b82f6;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;">
+        📄 导出 PDF
+      </button>
+    </div>
+
+    <div id="exportArea" style="background:#fff; padding:20px;">
+      <h2 class="text-2xl font-bold mb-2">${n.video_title}</h2>
+      <a href="${n.video_url}" target="_blank" class="text-blue-500 text-sm">🔗 原视频</a>
+      <div class="prose max-w-none mt-4">
+        <h3 class="text-lg font-bold mt-4 border-l-4 border-purple-500 pl-2">📖 深度笔记</h3>
+        <div class="bg-gray-50 p-4 rounded">${md(n.summary)}</div>
+        <h3 class="text-lg font-bold mt-4 border-l-4 border-yellow-500 pl-2">💬 评论区精华</h3>
+        <div class="bg-yellow-50 p-4 rounded">${md(n.comments_summary)}</div>
+        <h3 class="text-lg font-bold mt-4 border-l-4 border-green-500 pl-2">🧠 思维导图</h3>
+        <div class="bg-green-50 p-4 rounded">${md(n.mindmap)}</div>
+      </div>
     </div>
   `;
   document.getElementById('modal').classList.remove('hidden');
 }
+
 </script>
 </body>
 </html>
